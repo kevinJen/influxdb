@@ -803,7 +803,15 @@ func (e *Engine) compactTSMFull() {
 			return
 
 		default:
+			optimize := false
+			logDesc := "full"
 			tsmFiles := e.CompactionPlan.Plan(e.WAL.LastWriteTime())
+
+			if len(tsmFiles) == 0 {
+				optimize = true
+				logDesc = "optimize"
+				tsmFiles = e.CompactionPlan.PlanOptimize()
+			}
 
 			if len(tsmFiles) == 0 {
 				time.Sleep(time.Second)
@@ -816,16 +824,29 @@ func (e *Engine) compactTSMFull() {
 				go func(groupNum int, group CompactionGroup) {
 					defer wg.Done()
 					start := time.Now()
-					e.logger.Printf("beginning full compaction of group %d, %d TSM files", groupNum, len(group))
+					e.logger.Printf("beginning %s compaction of group %d, %d TSM files", logDesc, groupNum, len(group))
 					for i, f := range group {
-						e.logger.Printf("compacting full group (%d) %s (#%d)", groupNum, f, i)
+						e.logger.Printf("compacting %s group (%d) %s (#%d)", logDesc, groupNum, f, i)
 					}
 
-					files, err := e.Compactor.CompactFull(group)
-					if err != nil {
-						e.logger.Printf("error compacting TSM files: %v", err)
-						time.Sleep(time.Second)
-						return
+					var (
+						files []string
+						err   error
+					)
+					if optimize {
+						files, err = e.Compactor.CompactFast(group)
+						if err != nil {
+							e.logger.Printf("error compacting TSM files: %v", err)
+							time.Sleep(time.Second)
+							return
+						}
+					} else {
+						files, err = e.Compactor.CompactFull(group)
+						if err != nil {
+							e.logger.Printf("error compacting TSM files: %v", err)
+							time.Sleep(time.Second)
+							return
+						}
 					}
 
 					if err := e.FileStore.Replace(group, files); err != nil {
@@ -835,10 +856,10 @@ func (e *Engine) compactTSMFull() {
 					}
 
 					for i, f := range files {
-						e.logger.Printf("compacted full group (%d) into %s (#%d)", groupNum, f, i)
+						e.logger.Printf("compacted %s group (%d) into %s (#%d)", logDesc, groupNum, f, i)
 					}
-					e.logger.Printf("compacted full %d files into %d files in %s",
-						len(group), len(files), time.Since(start))
+					e.logger.Printf("compacted %s %d files into %d files in %s",
+						logDesc, len(group), len(files), time.Since(start))
 				}(i, group)
 			}
 			wg.Wait()
